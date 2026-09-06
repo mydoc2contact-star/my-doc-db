@@ -126,7 +126,7 @@ export function HomePage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="مرضى اليوم" value={todayAppointments.length} icon={<Users className="h-5 w-5" />} />
         <StatCard label="الحاضرون" value={attended} icon={<Check className="h-5 w-5" />} tone="green" />
         <StatCard label="الغائبون" value={absent} icon={<UserMinus className="h-5 w-5" />} tone="red" />

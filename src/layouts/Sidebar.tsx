@@ -31,12 +31,15 @@ export function Sidebar({ open, onClose }: SidebarProps) {
 
       <aside
         className={cn(
-          'fixed inset-y-0 start-0 z-50 flex w-64 flex-col border-e border-surface-border bg-white lg:static lg:translate-x-0',
-          open ? 'translate-x-0' : '-translate-x-full rtl:translate-x-full lg:translate-x-0',
+          'flex w-64 shrink-0 flex-col border-e border-surface-border bg-white',
+          'max-lg:fixed max-lg:inset-y-0 max-lg:z-50 max-lg:start-0',
+          open
+            ? 'max-lg:translate-x-0'
+            : 'max-lg:-translate-x-full max-lg:rtl:translate-x-full rtl:max-lg:translate-x-full',
         )}
       >
         <div className="flex h-16 items-center justify-between border-b border-surface-border px-4">
-          <Logo size="sm" className="max-w-[200px]" />
+          <Logo size="sm" className="max-w-[160px]" />
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={onClose} aria-label="إغلاق">
             <X className="h-4 w-4" />
           </Button>
@@ -56,7 +59,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                 )
               }
             >
-              <item.icon className="h-4 w-4" />
+              <item.icon className="h-4 w-4 shrink-0" />
               {item.label}
             </NavLink>
           ))}

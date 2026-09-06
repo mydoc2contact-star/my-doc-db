@@ -13,10 +13,10 @@ export function DashboardLayout() {
   const showBack = location.pathname !== '/'
 
   return (
-    <div className="flex min-h-full bg-surface-muted">
+    <div className="flex min-h-full w-full bg-surface-muted">
       <Sidebar open={open} onClose={() => setOpen(false)} />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col overflow-x-hidden">
         <header className="flex h-16 items-center justify-between border-b border-surface-border bg-white px-4 lg:px-6">
           <div className="flex items-center gap-3">
             <Button
