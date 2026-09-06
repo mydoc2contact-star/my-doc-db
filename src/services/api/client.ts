@@ -78,10 +78,13 @@ async function request<T>(method: Method, path: string, options: RequestOptions 
       clearToken()
       onUnauthorized?.()
     }
+    const looksLikeHtml = !raw || raw.trimStart().startsWith('<')
     const fallback =
-      response.status === 502 || response.status === 503 || response.status === 504 || !raw
+      response.status === 502 || response.status === 503 || response.status === 504
         ? 'خادم MyDoc غير متصل. تأكد أن الـ Backend يعمل ثم أعد المحاولة.'
-        : 'فشل الطلب'
+        : looksLikeHtml
+          ? 'تعذر الوصول إلى خادم MyDoc. تأكد أن الموقع مربوط بنفس الـ API المستخدم في التطبيق.'
+          : 'فشل الطلب'
     throw new ApiError(envelope?.message ?? fallback, response.status)
   }
 
