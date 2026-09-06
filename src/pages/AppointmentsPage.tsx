@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Card, CardTitle } from '@/components/ui/Card'
 import { Field, Input, Textarea } from '@/components/ui/Field'
@@ -9,23 +9,49 @@ import { useAsync } from '@/hooks/useAsync'
 import {
   acceptAppointment,
   cancelAppointment,
+  createPrivateAppointment,
+  deleteAppointment,
+  deleteAvailabilitySlot,
+  deletePrivateAppointment,
   errorMessage,
   generateAvailability,
   listAllAppointments,
   listAvailability,
+  listPatients,
   manualBook,
+  markAttendance,
+  updatePrivateAppointment,
 } from '@/services/api'
-import type { Appointment, AvailabilitySlot, DisplayStatus } from '@/types'
-import { addDays, formatDateAr, formatWeekdayAr, nextDays, todayKey, toDateKey } from '@/utils/dates'
-import { getDisplayStatus, patientName, patientPhone } from '@/utils/status'
+import type { Appointment, AvailabilitySlot, DisplayStatus, PatientSummary } from '@/types'
+import {
+  addDays,
+  formatAppointmentTime,
+  formatDateAr,
+  formatWeekdayAr,
+  nextDays,
+  normalizeTime,
+  todayKey,
+  toDateKey,
+} from '@/utils/dates'
+import {
+  canRecordAttendance,
+  getDisplayStatus,
+  isAttendanceWindowOpen,
+  isPrivateAppointment,
+  patientName,
+  patientPhone,
+} from '@/utils/status'
 
-const FILTERS: Array<{ id: 'all' | DisplayStatus; label: string }> = [
+type AppointmentFilter = 'all' | 'private' | DisplayStatus
+
+const FILTERS: Array<{ id: AppointmentFilter; label: string }> = [
   { id: 'all', label: 'الكل' },
   { id: 'upcoming', label: 'قادم' },
   { id: 'attended', label: 'حضر' },
   { id: 'absent', label: 'غائب' },
   { id: 'completed', label: 'مكتمل' },
   { id: 'cancelled', label: 'ملغى' },
+  { id: 'private', label: 'خاص' },
 ]
 
 export function AppointmentsPage() {
@@ -37,11 +63,20 @@ export function AppointmentsPage() {
     (signal) => listAllAppointments({ from, to, sort: 'asc', limit: 500 }, signal),
     [from, to],
   )
-  const slotsState = useAsync(() => listAvailability({ from, to }), [from, to])
+  const slotsState = useAsync(() => listAvailability({ from, to, availableOnly: true }), [from, to])
 
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]['id']>('all')
+  const [filter, setFilter] = useState<AppointmentFilter>('all')
   const [manualOpen, setManualOpen] = useState(false)
   const [slotsOpen, setSlotsOpen] = useState(false)
+  const [privateOpen, setPrivateOpen] = useState(false)
+  const [editingPrivate, setEditingPrivate] = useState<Appointment | null>(null)
+  const [marking, setMarking] = useState<{ id: string; status: 'ATTENDED' | 'ABSENT' } | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const appointments = appointmentsState.data ?? []
   const todayItems = appointments.filter((item) => toDateKey(item.date) === from)
@@ -50,7 +85,8 @@ export function AppointmentsPage() {
   const visible = useMemo(() => {
     const source = [...todayItems, ...upcomingItems]
     if (filter === 'all') return source
-    return source.filter((item) => getDisplayStatus(item) === filter)
+    if (filter === 'private') return source.filter((item) => isPrivateAppointment(item))
+    return source.filter((item) => !isPrivateAppointment(item) && getDisplayStatus(item) === filter)
   }, [todayItems, upcomingItems, filter])
 
   async function handleCancel(id: string) {
@@ -73,18 +109,86 @@ export function AppointmentsPage() {
     }
   }
 
+  async function handleDelete(id: string) {
+    if (!window.confirm('هل تريد حذف هذا الموعد نهائياً؟ لن يظهر بعد الحذف.')) return
+    try {
+      await deleteAppointment(id)
+      await Promise.all([appointmentsState.reload(), slotsState.reload()])
+      push('تم حذف الموعد', 'success')
+    } catch (error) {
+      push(errorMessage(error), 'error')
+    }
+  }
+
+  async function handleDeleteSlot(id: string) {
+    if (!window.confirm('حذف هذه الفترة الإلكترونية؟ لن يستطيع المرضى حجزها بعد الآن.')) return
+    try {
+      await deleteAvailabilitySlot(id)
+      await slotsState.reload()
+      push('تم حذف الفترة', 'success')
+    } catch (error) {
+      push(errorMessage(error), 'error')
+    }
+  }
+
+  async function handleAttendance(id: string, status: 'ATTENDED' | 'ABSENT') {
+    if (marking) return
+    setMarking({ id, status })
+    try {
+      await markAttendance(id, status)
+      await appointmentsState.reload()
+      push(status === 'ATTENDED' ? 'تم تسجيل الحضور ووصوله للإدارة' : 'تم تسجيل الغياب ووصوله للإدارة', 'success')
+    } catch (error) {
+      push(errorMessage(error), 'error')
+    } finally {
+      setMarking(null)
+    }
+  }
+
+  async function handleDeletePrivate(id: string) {
+    if (!window.confirm('هل أنت متأكد من حذف هذا الموعد الخاص؟ ستعود الفترات الزمنية إلى قائمة المواعيد المتاحة مباشرة.')) {
+      return
+    }
+    try {
+      await deletePrivateAppointment(id)
+      await Promise.all([appointmentsState.reload(), slotsState.reload()])
+      setPrivateOpen(false)
+      setEditingPrivate(null)
+      push('تم حذف الموعد الخاص', 'success')
+    } catch (error) {
+      push(errorMessage(error), 'error')
+    }
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-bold text-slate-900">المواعيد</h1>
-          <p className="mt-1 text-sm text-slate-500">مواعيد اليوم والقادمة، مع إمكانية الإضافة اليدوية أو الإلكترونية.</p>
+          <p className="mt-1 text-sm text-slate-500">مواعيد اليوم والقادمة، مع الإضافة اليدوية والإلكترونية والمواعيد الخاصة.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => setSlotsOpen(true)}>
             إنشاء مواعيد إلكترونية
           </Button>
-          <Button onClick={() => setManualOpen(true)}>إضافة موعد يدوي</Button>
+          <Button
+            variant="outline"
+            className="border-violet-200 bg-violet-50 text-violet-800 hover:bg-violet-100"
+            onClick={() => {
+              setEditingPrivate(null)
+              setPrivateOpen(true)
+            }}
+          >
+            موعد خاص
+          </Button>
+          <Button
+            onClick={async () => {
+              await slotsState.reload()
+              setManualOpen(true)
+            }}
+          >
+            إضافة موعد يدوي
+          </Button>
         </div>
       </div>
 
@@ -110,16 +214,34 @@ export function AppointmentsPage() {
         items={visible.filter((item) => toDateKey(item.date) === from)}
         loading={appointmentsState.loading}
         error={appointmentsState.error}
+        now={now}
+        marking={marking}
         onAccept={handleAccept}
         onCancel={handleCancel}
+        onDelete={handleDelete}
+        onAttendance={handleAttendance}
+        onEditPrivate={(item) => {
+          setEditingPrivate(item)
+          setPrivateOpen(true)
+        }}
+        onDeletePrivate={handleDeletePrivate}
       />
 
       <AppointmentTable
         title="المواعيد القادمة"
         items={visible.filter((item) => toDateKey(item.date) > from)}
         loading={appointmentsState.loading}
+        now={now}
+        marking={marking}
         onAccept={handleAccept}
         onCancel={handleCancel}
+        onDelete={handleDelete}
+        onAttendance={handleAttendance}
+        onEditPrivate={(item) => {
+          setEditingPrivate(item)
+          setPrivateOpen(true)
+        }}
+        onDeletePrivate={handleDeletePrivate}
       />
 
       <Card>
@@ -127,11 +249,12 @@ export function AppointmentsPage() {
         <p className="mb-3 text-sm text-slate-500">
           هذه الفترات تظهر للمرضى في تطبيق MyDoc ويمكنهم حجزها بنفس الحساب.
         </p>
-        <SlotsList slots={slotsState.data ?? []} />
+        <SlotsList slots={slotsState.data ?? []} onDelete={handleDeleteSlot} />
       </Card>
 
       {manualOpen && (
         <ManualAppointmentModal
+          slots={slotsState.data ?? []}
           onClose={() => setManualOpen(false)}
           onCreated={async () => {
             setManualOpen(false)
@@ -149,8 +272,28 @@ export function AppointmentsPage() {
           }}
         />
       )}
+
+      {privateOpen && (
+        <PrivateAppointmentModal
+          appointment={editingPrivate}
+          onClose={() => {
+            setPrivateOpen(false)
+            setEditingPrivate(null)
+          }}
+          onDeleted={handleDeletePrivate}
+          onSaved={async () => {
+            setPrivateOpen(false)
+            setEditingPrivate(null)
+            await Promise.all([appointmentsState.reload(), slotsState.reload()])
+          }}
+        />
+      )}
     </div>
   )
+}
+
+function isDoctorCreated(item: Appointment) {
+  return !item.patientId && !item.isPrivate
 }
 
 function AppointmentTable({
@@ -158,16 +301,30 @@ function AppointmentTable({
   items,
   loading,
   error,
+  now,
+  marking,
   onAccept,
   onCancel,
+  onDelete,
+  onAttendance,
+  onEditPrivate,
+  onDeletePrivate,
 }: {
   title: string
   items: Appointment[]
   loading?: boolean
   error?: string | null
+  now: number
+  marking: { id: string; status: 'ATTENDED' | 'ABSENT' } | null
   onAccept: (id: string) => void
   onCancel: (id: string) => void
+  onDelete: (id: string) => void
+  onAttendance: (id: string, status: 'ATTENDED' | 'ABSENT') => void
+  onEditPrivate: (item: Appointment) => void
+  onDeletePrivate: (id: string) => void
 }) {
+  const clock = new Date(now)
+
   return (
     <Card className="overflow-hidden p-0">
       <div className="border-b border-surface-border px-5 py-4">
@@ -204,33 +361,94 @@ function AppointmentTable({
                 </td>
               </tr>
             ) : (
-              items.map((item) => (
-                <tr key={item.id} className="border-t border-surface-border">
-                  <td className="px-5 py-3">
-                    <p className="font-medium text-slate-900">{patientName(item)}</p>
-                    <p className="text-xs text-slate-500">{patientPhone(item)}</p>
-                  </td>
-                  <td className="px-5 py-3 text-slate-600">{formatDateAr(item.date)}</td>
-                  <td className="px-5 py-3 text-slate-600">{item.time}</td>
-                  <td className="px-5 py-3">
-                    <StatusBadge appointment={item} />
-                  </td>
-                  <td className="px-5 py-3">
-                    <div className="flex flex-wrap gap-2">
-                      {item.status === 'PENDING' && (
-                        <Button size="sm" variant="secondary" onClick={() => onAccept(item.id)}>
-                          تأكيد
-                        </Button>
+              items.map((item) => {
+                const privateItem = isPrivateAppointment(item)
+                const canMark = canRecordAttendance(item)
+                const windowOpen = isAttendanceWindowOpen(item, clock)
+                const busy = marking?.id === item.id
+
+                return (
+                  <tr
+                    key={item.id}
+                    className={
+                      privateItem
+                        ? 'border-t border-violet-100 bg-violet-50/40'
+                        : 'border-t border-surface-border'
+                    }
+                  >
+                    <td className="px-5 py-3">
+                      <p className={privateItem ? 'font-medium text-violet-900' : 'font-medium text-slate-900'}>
+                        {patientName(item)}
+                      </p>
+                      <p className="text-xs text-slate-500">{patientPhone(item)}</p>
+                    </td>
+                    <td className="px-5 py-3 text-slate-600">{formatDateAr(item.date)}</td>
+                    <td className="px-5 py-3 text-slate-600">{formatAppointmentTime(item.time, item.endTime)}</td>
+                    <td className="px-5 py-3">
+                      <StatusBadge appointment={item} />
+                    </td>
+                    <td className="px-5 py-3">
+                      <div className="flex flex-wrap gap-2">
+                        {privateItem ? (
+                          <>
+                            <Button size="sm" variant="secondary" onClick={() => onEditPrivate(item)}>
+                              تعديل
+                            </Button>
+                            <Button size="sm" variant="danger" onClick={() => onDeletePrivate(item.id)}>
+                              حذف
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            {item.status === 'PENDING' && (
+                              <Button size="sm" variant="secondary" onClick={() => onAccept(item.id)}>
+                                تأكيد
+                              </Button>
+                            )}
+                            {canMark && (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="success"
+                                  loading={busy && marking?.status === 'ATTENDED'}
+                                  disabled={!windowOpen || Boolean(marking)}
+                                  onClick={() => onAttendance(item.id, 'ATTENDED')}
+                                >
+                                  حضر
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="danger"
+                                  loading={busy && marking?.status === 'ABSENT'}
+                                  disabled={!windowOpen || Boolean(marking)}
+                                  onClick={() => onAttendance(item.id, 'ABSENT')}
+                                >
+                                  غائب
+                                </Button>
+                              </>
+                            )}
+                            {item.status !== 'CANCELLED' && item.status !== 'COMPLETED' && item.status !== 'NO_SHOW' && (
+                              <Button size="sm" variant="ghost" onClick={() => onCancel(item.id)}>
+                                إلغاء
+                              </Button>
+                            )}
+                            {isDoctorCreated(item) && (
+                              <Button size="sm" variant="danger" onClick={() => onDelete(item.id)}>
+                                حذف
+                              </Button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                      {canMark && !windowOpen && (
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          يُفعَّل تسجيل الحضور قبل الموعد بـ 10 دقائق.
+                        </p>
                       )}
-                      {item.status !== 'CANCELLED' && item.status !== 'COMPLETED' && (
-                        <Button size="sm" variant="ghost" onClick={() => onCancel(item.id)}>
-                          إلغاء
-                        </Button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))
+                    </td>
+                  </tr>
+                )
+              })
             )}
           </tbody>
         </table>
@@ -239,8 +457,14 @@ function AppointmentTable({
   )
 }
 
-function SlotsList({ slots }: { slots: AvailabilitySlot[] }) {
-  const openSlots = slots.filter((slot) => !slot.isBooked).slice(0, 24)
+function SlotsList({
+  slots,
+  onDelete,
+}: {
+  slots: AvailabilitySlot[]
+  onDelete: (id: string) => void
+}) {
+  const openSlots = slots.filter((slot) => !slot.isBooked)
   if (openSlots.length === 0) {
     return <p className="text-sm text-slate-500">لا توجد فترات متاحة حالياً. أنشئ مواعيد إلكترونية ليتمكن المرضى من الحجز.</p>
   }
@@ -248,8 +472,18 @@ function SlotsList({ slots }: { slots: AvailabilitySlot[] }) {
   return (
     <div className="flex flex-wrap gap-2">
       {openSlots.map((slot) => (
-        <span key={slot.id} className="rounded-lg bg-slate-50 px-2.5 py-1 text-xs text-slate-700">
+        <span
+          key={slot.id}
+          className="inline-flex items-center gap-2 rounded-lg bg-slate-50 px-2.5 py-1 text-xs text-slate-700"
+        >
           {formatDateAr(slot.date)} · {slot.time}
+          <button
+            type="button"
+            onClick={() => onDelete(slot.id)}
+            className="font-medium text-rose-600 hover:text-rose-700"
+          >
+            حذف
+          </button>
         </span>
       ))}
     </div>
@@ -257,32 +491,63 @@ function SlotsList({ slots }: { slots: AvailabilitySlot[] }) {
 }
 
 function ManualAppointmentModal({
+  slots,
   onClose,
   onCreated,
 }: {
+  slots: AvailabilitySlot[]
   onClose: () => void
   onCreated: () => Promise<void>
 }) {
   const { push } = useToast()
+  const openSlots = useMemo(
+    () =>
+      slots
+        .filter((slot) => !slot.isBooked)
+        .slice()
+        .sort((a, b) => `${toDateKey(a.date)}${normalizeTime(a.time)}`.localeCompare(`${toDateKey(b.date)}${normalizeTime(b.time)}`)),
+    [slots],
+  )
+  const [selectedSlotId, setSelectedSlotId] = useState(openSlots[0]?.id ?? '')
   const [patientNameValue, setPatientNameValue] = useState('')
   const [phone, setPhone] = useState('')
-  const [date, setDate] = useState(todayKey())
-  const [time, setTime] = useState('09:00')
+  const [customDate, setCustomDate] = useState(todayKey())
+  const [customTime, setCustomTime] = useState('09:00')
   const [notes, setNotes] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
+  const selectedSlot = openSlots.find((slot) => slot.id === selectedSlotId) ?? null
+  const datesWithSlots = useMemo(() => {
+    const keys = Array.from(new Set(openSlots.map((slot) => toDateKey(slot.date))))
+    return keys.sort()
+  }, [openSlots])
+  const selectedDate = selectedSlot ? toDateKey(selectedSlot.date) : ''
+  const timesForDate = openSlots.filter((slot) => toDateKey(slot.date) === selectedDate)
+
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
+    if (patientNameValue.trim().length < 2) {
+      push('أدخل اسم المريض (حرفان على الأقل)', 'error')
+      return
+    }
+
+    const date = selectedSlot ? toDateKey(selectedSlot.date) : customDate
+    const time = selectedSlot ? normalizeTime(selectedSlot.time) : normalizeTime(customTime)
+    if (!date || !time) {
+      push('اختر تاريخاً ووقتاً للموعد', 'error')
+      return
+    }
+
     setSubmitting(true)
     try {
       await manualBook({
-        patientName: patientNameValue,
-        patientPhone: phone || undefined,
+        patientName: patientNameValue.trim(),
+        patientPhone: phone.trim() || undefined,
         date,
         time,
-        notes: notes || undefined,
+        notes: notes.trim() || undefined,
       })
-      push('تم إضافة الموعد اليدوي', 'success')
+      push('تم حجز الموعد اليدوي', 'success')
       await onCreated()
     } catch (error) {
       push(errorMessage(error), 'error')
@@ -300,14 +565,70 @@ function ManualAppointmentModal({
         <Field label="الهاتف">
           <Input value={phone} onChange={(event) => setPhone(event.target.value)} />
         </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="التاريخ">
-            <Input type="date" value={date} onChange={(event) => setDate(event.target.value)} required />
-          </Field>
-          <Field label="الوقت">
-            <Input type="time" value={time} onChange={(event) => setTime(event.target.value)} required />
-          </Field>
-        </div>
+
+        {openSlots.length > 0 ? (
+          <div>
+            <p className="mb-2 text-sm font-medium text-slate-700">اختر موعداً إلكترونياً متاحاً</p>
+            <div className="mb-2 flex flex-wrap gap-2">
+              {datesWithSlots.map((day) => (
+                <button
+                  key={day}
+                  type="button"
+                  onClick={() => {
+                    const first = openSlots.find((slot) => toDateKey(slot.date) === day)
+                    if (first) setSelectedSlotId(first.id)
+                  }}
+                  className={
+                    selectedDate === day
+                      ? 'rounded-full bg-brand-600 px-3 py-1 text-xs font-medium text-white'
+                      : 'rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600'
+                  }
+                >
+                  {formatDateAr(day)}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {timesForDate.map((slot) => {
+                const selected = selectedSlotId === slot.id
+                return (
+                  <button
+                    key={slot.id}
+                    type="button"
+                    onClick={() => setSelectedSlotId(slot.id)}
+                    className={
+                      selected
+                        ? 'rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white'
+                        : 'rounded-lg bg-slate-50 px-3 py-1.5 text-sm text-slate-700 ring-1 ring-surface-border hover:bg-brand-50'
+                    }
+                  >
+                    {normalizeTime(slot.time)}
+                  </button>
+                )
+              })}
+            </div>
+            {selectedSlot && (
+              <p className="mt-2 text-xs text-slate-500">
+                الموعد المحدد: {formatDateAr(selectedSlot.date)} · {normalizeTime(selectedSlot.time)}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              لا توجد فترات إلكترونية متاحة. يمكنك إدخال التاريخ والوقت يدوياً، أو أنشئ مواعيد إلكترونية أولاً.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="التاريخ">
+                <Input type="date" value={customDate} onChange={(event) => setCustomDate(event.target.value)} required />
+              </Field>
+              <Field label="الوقت">
+                <Input type="time" value={customTime} onChange={(event) => setCustomTime(event.target.value)} required />
+              </Field>
+            </div>
+          </div>
+        )}
+
         <Field label="ملاحظات">
           <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} />
         </Field>
@@ -315,8 +636,8 @@ function ManualAppointmentModal({
           <Button variant="outline" onClick={onClose}>
             إلغاء
           </Button>
-          <Button type="submit" loading={submitting}>
-            حفظ
+          <Button type="submit" loading={submitting} disabled={openSlots.length > 0 && !selectedSlot}>
+            حجز الموعد
           </Button>
         </div>
       </form>
@@ -469,6 +790,209 @@ function ElectronicSlotsModal({
           </Button>
           <Button type="submit" loading={submitting}>
             إنشاء
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+function PrivateAppointmentModal({
+  appointment,
+  onClose,
+  onSaved,
+  onDeleted,
+}: {
+  appointment: Appointment | null
+  onClose: () => void
+  onSaved: () => Promise<void>
+  onDeleted: (id: string) => Promise<void>
+}) {
+  const { push } = useToast()
+  const isEditing = Boolean(appointment)
+  const patientsState = useAsync(() => listPatients(), [])
+  const patients = patientsState.data ?? []
+
+  const [date, setDate] = useState(appointment ? toDateKey(appointment.date) : todayKey())
+  const [startTime, setStartTime] = useState(appointment ? normalizeTime(appointment.time) : '09:00')
+  const [endTime, setEndTime] = useState(
+    appointment?.endTime ? normalizeTime(appointment.endTime) : '10:00',
+  )
+  const [patientNameValue, setPatientNameValue] = useState(
+    appointment?.patientName || appointment?.patient?.name || '',
+  )
+  const [phone, setPhone] = useState(appointment?.patientPhone || appointment?.patient?.phone || '')
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(appointment?.patientId ?? null)
+  const [notes, setNotes] = useState(appointment?.notes ?? '')
+  const [submitting, setSubmitting] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  function selectPatient(patient: PatientSummary) {
+    if (selectedPatientId === patient.id) {
+      setSelectedPatientId(null)
+      setPatientNameValue('')
+      setPhone('')
+      return
+    }
+    setSelectedPatientId(patient.id)
+    setPatientNameValue(patient.name)
+    setPhone(patient.phone)
+  }
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!date) {
+      push('اختر تاريخ الموعد', 'error')
+      return
+    }
+    const start = normalizeTime(startTime)
+    const end = normalizeTime(endTime)
+    if (!start || !end) {
+      push('حدد وقت البداية والنهاية', 'error')
+      return
+    }
+    if (start >= end) {
+      push('وقت النهاية يجب أن يكون بعد وقت البداية', 'error')
+      return
+    }
+    if (!selectedPatientId && patientNameValue.trim().length < 2) {
+      push('أدخل اسم المريض (حرفان على الأقل) أو اختره من القائمة', 'error')
+      return
+    }
+
+    setSubmitting(true)
+    try {
+      const payload = {
+        date,
+        startTime: start,
+        endTime: end,
+        patientId: selectedPatientId ?? undefined,
+        patientName: patientNameValue.trim() || undefined,
+        patientPhone: phone.trim() || undefined,
+        notes: notes.trim() || undefined,
+      }
+      if (appointment) {
+        await updatePrivateAppointment(appointment.id, payload)
+        push('تم تحديث الموعد الخاص', 'success')
+      } else {
+        await createPrivateAppointment(payload)
+        push('تم إنشاء الموعد الخاص', 'success')
+      }
+      await onSaved()
+    } catch (error) {
+      push(errorMessage(error), 'error')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal title={isEditing ? 'تعديل الموعد الخاص' : 'إنشاء موعد خاص'} onClose={onClose}>
+      <form className="space-y-3" onSubmit={handleSubmit}>
+        <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-800">
+          هذا الموعد خاص ولن يظهر للمريض إطلاقاً. سيتم حجز هذه الفترة بالكامل وتعطيل جميع الأوقات الواقعة خلالها.
+        </div>
+        <Field label="التاريخ">
+          <Input type="date" value={date} onChange={(event) => setDate(event.target.value)} required />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="وقت البداية">
+            <Input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} required />
+          </Field>
+          <Field label="وقت النهاية">
+            <Input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} required />
+          </Field>
+        </div>
+
+        <div>
+          <p className="mb-2 text-sm font-medium text-slate-700">اختر من قائمة المرضى (اختياري)</p>
+          {patientsState.loading ? (
+            <p className="text-xs text-slate-500">جاري تحميل المرضى...</p>
+          ) : patients.length === 0 ? (
+            <p className="text-xs text-slate-500">لا يوجد مرضى سابقون — يمكنك إدخال الاسم يدوياً.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {patients.map((patient) => {
+                const selected = selectedPatientId === patient.id
+                return (
+                  <button
+                    key={patient.id}
+                    type="button"
+                    onClick={() => selectPatient(patient)}
+                    className={
+                      selected
+                        ? 'rounded-lg border border-violet-400 bg-violet-100 px-3 py-2 text-start'
+                        : 'rounded-lg border border-surface-border bg-white px-3 py-2 text-start hover:bg-slate-50'
+                    }
+                  >
+                    <span className={`block text-sm font-medium ${selected ? 'text-violet-900' : 'text-slate-800'}`}>
+                      {patient.name}
+                    </span>
+                    {patient.phone ? (
+                      <span className={`block text-xs ${selected ? 'text-violet-700' : 'text-slate-500'}`}>
+                        {patient.phone}
+                      </span>
+                    ) : null}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-surface-border bg-slate-50 p-3">
+          <p className="mb-3 text-sm font-semibold text-slate-800">معلومات المريض</p>
+          <div className="space-y-3">
+            <Field label="اسم المريض">
+              <Input
+                value={patientNameValue}
+                onChange={(event) => {
+                  setPatientNameValue(event.target.value)
+                  if (selectedPatientId) setSelectedPatientId(null)
+                }}
+                placeholder="اسم المريض"
+                required={!selectedPatientId}
+              />
+            </Field>
+            <Field label="الهاتف">
+              <Input
+                value={phone}
+                onChange={(event) => {
+                  setPhone(event.target.value)
+                  if (selectedPatientId) setSelectedPatientId(null)
+                }}
+                placeholder="05xxxxxxxx"
+              />
+            </Field>
+          </div>
+        </div>
+
+        <Field label="ملاحظات">
+          <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} />
+        </Field>
+
+        <div className="flex flex-wrap justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={onClose}>
+            إلغاء
+          </Button>
+          {isEditing && appointment && (
+            <Button
+              variant="danger"
+              loading={deleting}
+              onClick={async () => {
+                setDeleting(true)
+                try {
+                  await onDeleted(appointment.id)
+                } finally {
+                  setDeleting(false)
+                }
+              }}
+            >
+              حذف
+            </Button>
+          )}
+          <Button type="submit" loading={submitting}>
+            حفظ الموعد الخاص
           </Button>
         </div>
       </form>

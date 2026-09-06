@@ -1,4 +1,5 @@
 import type { Appointment, DisplayStatus } from '@/types'
+import { isAttendanceMarkingAvailable } from '@/utils/dates'
 
 const LABEL: Record<DisplayStatus, string> = {
   upcoming: 'قادم',
@@ -37,7 +38,7 @@ export function statusClass(status: DisplayStatus): string {
 }
 
 export function patientName(appointment: Appointment): string {
-  return appointment.patient?.name || appointment.patientName || 'مريض'
+  return appointment.patient?.name || appointment.patientName || (appointment.isPrivate ? 'موعد خاص' : 'مريض')
 }
 
 export function patientPhone(appointment: Appointment): string {
@@ -46,4 +47,18 @@ export function patientPhone(appointment: Appointment): string {
 
 export function isActiveAppointment(appointment: Appointment): boolean {
   return appointment.status !== 'CANCELLED' && appointment.status !== 'REJECTED'
+}
+
+export function isPrivateAppointment(appointment: Appointment): boolean {
+  return Boolean(appointment.isPrivate)
+}
+
+export function canRecordAttendance(appointment: Appointment): boolean {
+  if (appointment.isPrivate) return false
+  if (appointment.status === 'CANCELLED' || appointment.status === 'REJECTED') return false
+  return appointment.attendanceStatus === 'PENDING' || appointment.attendanceStatus === 'LATE'
+}
+
+export function isAttendanceWindowOpen(appointment: Appointment, now = new Date()): boolean {
+  return isAttendanceMarkingAvailable(appointment.date, appointment.time, now)
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { CalendarDays, Check, ChevronLeft, UserMinus, Users } from 'lucide-react'
 import { Logo } from '@/components/Logo'
 import { Button } from '@/components/ui/Button'
@@ -19,13 +19,23 @@ import {
 } from '@/services/api'
 import type { Appointment, TodayQueue } from '@/types'
 import { todayKey, toDateKey } from '@/utils/dates'
-import { isActiveAppointment, patientName, patientPhone } from '@/utils/status'
+import {
+  canRecordAttendance,
+  isActiveAppointment,
+  isAttendanceWindowOpen,
+  isPrivateAppointment,
+  patientName,
+  patientPhone,
+} from '@/utils/status'
 
 function currentPatient(queue: TodayQueue | null): Appointment | null {
   if (!queue?.session.isActive || queue.session.isCompleted) return null
   return (
     queue.appointments.find(
-      (item) => isActiveAppointment(item) && item.queueNumber === queue.session.currentNumber,
+      (item) =>
+        isActiveAppointment(item) &&
+        !isPrivateAppointment(item) &&
+        item.queueNumber === queue.session.currentNumber,
     ) ?? null
   )
 }
@@ -34,7 +44,12 @@ function upcomingPatients(queue: TodayQueue | null): Appointment[] {
   if (!queue) return []
   const current = queue.session.currentNumber
   return queue.appointments
-    .filter((item) => isActiveAppointment(item) && (item.queueNumber ?? 0) > current)
+    .filter(
+      (item) =>
+        isActiveAppointment(item) &&
+        !isPrivateAppointment(item) &&
+        (item.queueNumber ?? 0) > current,
+    )
     .sort((a, b) => (a.queueNumber ?? 0) - (b.queueNumber ?? 0))
 }
 
@@ -42,7 +57,14 @@ export function HomePage() {
   const { push } = useToast()
   const { doctor, refresh } = useAuth()
   const [onlineBusy, setOnlineBusy] = useState(false)
+  const [marking, setMarking] = useState<{ id: string; status: 'ATTENDED' | 'ABSENT' } | null>(null)
+  const [now, setNow] = useState(() => Date.now())
   const today = todayKey()
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const queueState = useAsync((signal) => getTodayQueue(signal), [])
   const appointmentsState = useAsync(
@@ -51,7 +73,7 @@ export function HomePage() {
   )
 
   const todayAppointments = (appointmentsState.data ?? []).filter(
-    (item) => toDateKey(item.date) === today && isActiveAppointment(item),
+    (item) => toDateKey(item.date) === today && isActiveAppointment(item) && !isPrivateAppointment(item),
   )
   const attended = todayAppointments.filter((item) => item.attendanceStatus === 'ATTENDED').length
   const absent = todayAppointments.filter(
@@ -98,14 +120,23 @@ export function HomePage() {
   }
 
   async function handleAttendance(appointmentId: string, status: 'ATTENDED' | 'ABSENT') {
+    if (marking) return
+    setMarking({ id: appointmentId, status })
     try {
       await markAttendance(appointmentId, status)
       await Promise.all([queueState.reload(), appointmentsState.reload()])
-      push(status === 'ATTENDED' ? 'تم تسجيل الحضور' : 'تم تسجيل الغياب', 'success')
+      push(
+        status === 'ATTENDED' ? 'تم تسجيل الحضور ووصوله للإدارة' : 'تم تسجيل الغياب ووصوله للإدارة',
+        'success',
+      )
     } catch (error) {
       push(errorMessage(error), 'error')
+    } finally {
+      setMarking(null)
     }
   }
+
+  const clock = new Date(now)
 
   return (
     <div className="space-y-5">
@@ -171,15 +202,31 @@ export function HomePage() {
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="success"
-                  onClick={() => handleAttendance(current.id, 'ATTENDED')}
-                >
-                  حضر
-                </Button>
-                <Button variant="danger" onClick={() => handleAttendance(current.id, 'ABSENT')}>
-                  غائب
-                </Button>
+                {canRecordAttendance(current) ? (
+                  <>
+                    {!isAttendanceWindowOpen(current, clock) && (
+                      <p className="w-full text-xs text-slate-500">
+                        يُفعَّل تسجيل الحضور قبل الموعد بـ 10 دقائق ويصل مباشرة للإدارة.
+                      </p>
+                    )}
+                    <Button
+                      variant="success"
+                      loading={marking?.id === current.id && marking.status === 'ATTENDED'}
+                      disabled={!isAttendanceWindowOpen(current, clock) || Boolean(marking)}
+                      onClick={() => handleAttendance(current.id, 'ATTENDED')}
+                    >
+                      حضر
+                    </Button>
+                    <Button
+                      variant="danger"
+                      loading={marking?.id === current.id && marking.status === 'ABSENT'}
+                      disabled={!isAttendanceWindowOpen(current, clock) || Boolean(marking)}
+                      onClick={() => handleAttendance(current.id, 'ABSENT')}
+                    >
+                      غائب
+                    </Button>
+                  </>
+                ) : null}
                 <Button variant="outline" onClick={handleNext} leftIcon={<ChevronLeft className="h-4 w-4" />}>
                   التالي
                 </Button>
@@ -211,12 +258,28 @@ export function HomePage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <StatusBadge appointment={item} />
-                    <Button size="sm" variant="ghost" onClick={() => handleAttendance(item.id, 'ATTENDED')}>
-                      حضر
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => handleAttendance(item.id, 'ABSENT')}>
-                      غائب
-                    </Button>
+                    {canRecordAttendance(item) ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          loading={marking?.id === item.id && marking.status === 'ATTENDED'}
+                          disabled={!isAttendanceWindowOpen(item, clock) || Boolean(marking)}
+                          onClick={() => handleAttendance(item.id, 'ATTENDED')}
+                        >
+                          حضر
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          loading={marking?.id === item.id && marking.status === 'ABSENT'}
+                          disabled={!isAttendanceWindowOpen(item, clock) || Boolean(marking)}
+                          onClick={() => handleAttendance(item.id, 'ABSENT')}
+                        >
+                          غائب
+                        </Button>
+                      </>
+                    ) : null}
                   </div>
                 </li>
               ))}

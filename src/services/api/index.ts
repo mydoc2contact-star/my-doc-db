@@ -151,6 +151,10 @@ export async function cancelAppointment(appointmentId: string): Promise<Appointm
   return http.post<Appointment>(`/appointments/${appointmentId}/cancel`)
 }
 
+export async function deleteAppointment(appointmentId: string): Promise<void> {
+  await http.delete(`/appointments/${appointmentId}`)
+}
+
 export async function acceptAppointment(appointmentId: string): Promise<Appointment> {
   return http.post<Appointment>(`/appointments/${appointmentId}/accept`)
 }
@@ -163,6 +167,31 @@ export async function manualBook(payload: {
   notes?: string
 }): Promise<Appointment> {
   return http.post<Appointment>('/appointments/manual', payload)
+}
+
+export interface PrivateAppointmentPayload {
+  patientName?: string
+  patientPhone?: string
+  patientId?: string
+  date: string
+  startTime: string
+  endTime: string
+  notes?: string
+}
+
+export async function createPrivateAppointment(payload: PrivateAppointmentPayload): Promise<Appointment> {
+  return http.post<Appointment>('/appointments/private', payload)
+}
+
+export async function updatePrivateAppointment(
+  appointmentId: string,
+  payload: PrivateAppointmentPayload,
+): Promise<Appointment> {
+  return http.patch<Appointment>(`/appointments/private/${appointmentId}`, payload)
+}
+
+export async function deletePrivateAppointment(appointmentId: string): Promise<void> {
+  await http.delete(`/appointments/private/${appointmentId}`)
 }
 
 export async function listPatients(): Promise<PatientSummary[]> {
@@ -186,6 +215,7 @@ export async function listAvailability(params: {
   from?: string
   to?: string
   date?: string
+  availableOnly?: boolean
 }): Promise<AvailabilitySlot[]> {
   const data = await http.get<AvailabilitySlot[] | { items?: AvailabilitySlot[] }>(
     '/doctor/me/availability',

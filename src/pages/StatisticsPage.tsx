@@ -17,7 +17,7 @@ export function StatisticsPage() {
     return { patients, appointments }
   }, [])
 
-  const appointments = state.data?.appointments ?? []
+  const appointments = (state.data?.appointments ?? []).filter((item) => !item.isPrivate)
   const patients = state.data?.patients ?? []
   const completed = appointments.filter((item) => getDisplayStatus(item) === 'completed' || getDisplayStatus(item) === 'attended').length
   const absent = appointments.filter((item) => getDisplayStatus(item) === 'absent').length

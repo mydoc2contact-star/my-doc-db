@@ -1,17 +1,34 @@
+const APP_TZ_OFFSET_MINUTES = 60
+export const ATTENDANCE_MARK_GRACE_MINUTES = 10
+
 export function toDateKey(value?: string | Date | null): string {
   if (!value) return todayKey()
-  if (typeof value === 'string') {
-    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
-    if (match) return `${match[1]}-${match[2]}-${match[3]}`
-    const parsed = new Date(value)
-    if (!Number.isNaN(parsed.getTime())) return formatLocalKey(parsed)
-    return value.slice(0, 10)
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  const parsed = typeof value === 'string' ? new Date(value) : value
+  if (parsed instanceof Date && !Number.isNaN(parsed.getTime())) {
+    return formatUtcKey(parsed)
   }
-  return formatLocalKey(value)
+  return String(value).slice(0, 10)
 }
 
 export function todayKey(): string {
-  return formatLocalKey(new Date())
+  const shifted = new Date(Date.now() + APP_TZ_OFFSET_MINUTES * 60 * 1000)
+  return formatUtcKey(shifted)
+}
+
+export function formatUtcKey(date: Date): string {
+  const year = date.getUTCFullYear()
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(date.getUTCDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+export function normalizeTime(value: string): string {
+  const [hours = '0', minutes = '0'] = value.trim().split(':')
+  const hour = Number(hours)
+  const minute = Number(minutes)
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return '09:00'
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
 }
 
 export function formatLocalKey(date: Date): string {
@@ -60,4 +77,40 @@ export function startOfWeek(key: string): string {
 
 export function startOfMonth(key: string): string {
   return `${key.slice(0, 7)}-01`
+}
+
+function wallClockToUtcDate(
+  year: number,
+  monthIndex: number,
+  day: number,
+  hour: number,
+  minute: number,
+): Date {
+  const utcMs =
+    Date.UTC(year, monthIndex, day, hour, minute, 0, 0) - APP_TZ_OFFSET_MINUTES * 60 * 1000
+  return new Date(utcMs)
+}
+
+export function getAppointmentDateTime(dateValue: string, time: string): Date {
+  const key = toDateKey(dateValue)
+  const [year, month, day] = key.split('-').map(Number)
+  const safeTime = /^\d{1,2}:\d{2}/.test(time) ? time : '00:00'
+  const [hours, minutes] = safeTime.split(':').map(Number)
+  return wallClockToUtcDate(year, (month ?? 1) - 1, day ?? 1, hours || 0, minutes || 0)
+}
+
+export function isAttendanceMarkingAvailable(
+  dateValue: string,
+  time: string,
+  now = new Date(),
+  graceMinutes = ATTENDANCE_MARK_GRACE_MINUTES,
+): boolean {
+  const appointmentAt = getAppointmentDateTime(dateValue, time)
+  return now.getTime() >= appointmentAt.getTime() - graceMinutes * 60 * 1000
+}
+
+export function formatAppointmentTime(time: string, endTime?: string | null): string {
+  const start = normalizeTime(time)
+  if (!endTime) return start
+  return `${start} – ${normalizeTime(endTime)}`
 }

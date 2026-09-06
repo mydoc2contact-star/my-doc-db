@@ -6,9 +6,18 @@ const API_ERRORS: Record<string, string> = {
     'لا يمكن تسجيل الحضور إلا لمواعيد قائمة أو مؤكدة.',
   'Attendance cannot be marked for private appointments':
     'لا يمكن تسجيل الحضور للمواعيد الخاصة.',
+  'Patient name is required for private appointments': 'اسم المريض مطلوب للموعد الخاص.',
+  'Patient name or patientId is required': 'أدخل اسم المريض أو اختره من قائمة المرضى.',
+  'يوجد موعد خاص آخر يتداخل مع هذا الوقت': 'يوجد موعد خاص آخر يتداخل مع هذا الوقت.',
+  'يوجد موعد محجوز لمريض في هذه الفترة الزمنية': 'يوجد موعد محجوز لمريض في هذه الفترة الزمنية.',
+  'ليس لديك صلاحية للوصول إلى المواعيد الخاصة': 'ليست لديك صلاحية للوصول إلى المواعيد الخاصة.',
+  'وقت النهاية يجب أن يكون بعد وقت البداية': 'وقت النهاية يجب أن يكون بعد وقت البداية.',
+  'Patient not found': 'المريض غير موجود.',
   'Appointment not found': 'الموعد غير موجود.',
   'Cannot cancel this appointment': 'لا يمكن إلغاء هذا الموعد.',
   'Failed to cancel appointment': 'تعذر إلغاء الموعد.',
+  'Failed to delete appointment': 'تعذر حذف الموعد.',
+  'Appointment deleted': 'تم حذف الموعد.',
   'Appointment is not pending': 'هذا الموعد ليس بانتظار التأكيد.',
   'Doctor account is not active': 'حساب الطبيب غير مفعّل.',
   'Doctor not available': 'الطبيب غير متاح.',
@@ -26,7 +35,8 @@ const API_ERRORS: Record<string, string> = {
   'No slots could be generated with the provided settings':
     'تعذر إنشاء فترات بهذه الإعدادات. راجع الوقت والفاصل وفترة الراحة.',
   'Slot already exists': 'هذه الفترة موجودة مسبقاً.',
-  'Validation failed': 'البيانات المدخلة غير صحيحة.',
+  'Selected time slot is not available': 'هذا الوقت محجوز بالفعل. اختر وقتاً آخر.',
+  'Validation failed': 'البيانات المدخلة غير صحيحة. تأكد من الاسم والتاريخ والوقت.',
   'Forbidden': 'ليست لديك صلاحية لهذا الإجراء.',
   'Route not found': 'المسار غير موجود.',
 }
